@@ -19,6 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const instrumentSelect = document.getElementById('instrument-select');
   const octaveSelection = document.getElementById('octave-selection');
   const noteSelection = document.getElementById('note-selection');
+  const midiStatusText = document.getElementById('midi-status-text');
+  const requestMidiBtn = document.getElementById('request-midi-btn');
   
   // Training elements
   const noteDisplay = document.getElementById('note-display');
@@ -86,23 +88,91 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('click', requestMIDIAccessIfPossible, { once: true });
     document.addEventListener('touchstart', requestMIDIAccessIfPossible, { once: true });
     
-    // Also try to get MIDI access right away (for browsers that allow it)
+    // Check if MIDI is available and set up the system accordingly
     if (navigator.requestMIDIAccess) {
-      navigator.requestMIDIAccess().then(onMIDISuccess, (reason) => {
-        // If immediate access fails due to security policy, we'll try again on user interaction
-        console.log('Immediate MIDI access not granted, will request on first user interaction');
+      console.log('Web MIDI API is supported in this browser.');
+      // Check if already granted (for returning users)
+      navigator.requestMIDIAccess({ sysex: false }).then(onMIDISuccess, (reason) => {
+        // If immediate access fails, we'll try again on user interaction
+        console.log('MIDI access not granted initially, will request on user interaction');
+        updateMidiStatusDisplay(false);
       });
     } else {
       console.log('Web MIDI API is not supported in this browser.');
       appState.isMidiAvailable = false;
       createOnScreenKeyboard();
+      updateMidiStatusDisplay(false, 'Not supported');
     }
   }
   
   // Function to request MIDI access if possible
   function requestMIDIAccessIfPossible() {
     if (navigator.requestMIDIAccess && !appState.midiAccess) {
-      navigator.requestMIDIAccess().then(onMIDISuccess, onMIDIFailure);
+      // Request MIDI access with options - sysex is typically not needed and can be disabled for security
+      navigator.requestMIDIAccess({ sysex: false }).then(onMIDISuccess, onMIDIFailure);
+    } else if (!navigator.requestMIDIAccess) {
+      console.log('Web MIDI API is not supported in this browser.');
+      appState.isMidiAvailable = false;
+      createOnScreenKeyboard();
+    }
+  }
+
+  // Enhanced function to ensure MIDI access specifically for mobile
+  function ensureMIDIAccessOnMobile() {
+    // This function ensures MIDI access request happens during user interaction on mobile
+    if (navigator.requestMIDIAccess && !appState.midiAccess) {
+      // Try to request MIDI access, but on mobile browsers this must happen during a user gesture
+      navigator.requestMIDIAccess({ sysex: false })
+        .then(onMIDISuccess)
+        .catch((error) => {
+          console.log('MIDI access request failed:', error);
+          // On mobile, access might be denied due to timing, so create on-screen keyboard as fallback
+          if (!appState.midiAccess) {
+            createOnScreenKeyboard();
+          }
+        });
+    }
+  }
+  
+  // Function to explicitly request MIDI access (useful for retries or if initial access was denied)
+  function requestMIDIAccessExplicit() {
+    if (navigator.requestMIDIAccess) {
+      navigator.requestMIDIAccess({ sysex: false })
+        .then(onMIDISuccess, (error) => {
+          console.log('User explicitly denied MIDI access or an error occurred:', error);
+          // Still provide the on-screen keyboard as a fallback
+          createOnScreenKeyboard();
+          updateMidiStatusDisplay(false);
+        });
+    } else {
+      console.log('Web MIDI API is not supported in this browser');
+      createOnScreenKeyboard();
+      updateMidiStatusDisplay(false, 'Not supported');
+    }
+  }
+  
+  // Function to update the MIDI status display
+  function updateMidiStatusDisplay(hasMidiAccess, deviceName = null) {
+    if (!midiStatusText) return; // Guard in case element doesn't exist
+    
+    // Reset classes
+    midiStatusText.className = 'text-center'; // Reset to default classes
+    
+    if (hasMidiAccess && appState.midiInput) {
+      midiStatusText.textContent = `MIDI: Connected to ${appState.midiInput.name || 'device'}`;
+      midiStatusText.classList.add('midi-connected');
+      requestMidiBtn.classList.add('hidden');
+    } else if (hasMidiAccess) {
+      midiStatusText.textContent = 'MIDI: Available (connect a device)';
+      midiStatusText.classList.add('midi-connected');
+      requestMidiBtn.classList.add('hidden');
+    } else if (navigator.requestMIDIAccess) {
+      midiStatusText.textContent = 'MIDI: Not connected';
+      requestMidiBtn.classList.remove('hidden');
+    } else {
+      midiStatusText.textContent = 'MIDI: Not supported';
+      midiStatusText.classList.add('midi-error');
+      requestMidiBtn.classList.add('hidden');
     }
   }
 
@@ -114,13 +184,18 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       // Request MIDI access when moving to settings (user interaction required on mobile)
       if (navigator.requestMIDIAccess && !appState.midiAccess) {
-        navigator.requestMIDIAccess().then(onMIDISuccess, onMIDIFailure);
+        // Use the more robust request function that can be called multiple times
+        requestMIDIAccessIfPossible();
       }
       showScreen('settings');
     });
     startTrainingBtn.addEventListener('click', () => {
       if (appState.audioHandler) {
         appState.audioHandler.initializeAudio();
+      }
+      // Ensure MIDI access is requested at the start of training as well
+      if (navigator.requestMIDIAccess && !appState.midiAccess) {
+        requestMIDIAccessIfPossible();
       }
       startTrainingSession();
     });
@@ -140,6 +215,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Add reset progress button listener
     document.getElementById('reset-progress').addEventListener('click', resetAllProgress);
+    
+    // Add MIDI request button listener
+    requestMidiBtn.addEventListener('click', requestMIDIAccessExplicit);
   }
 
   function onMIDISuccess(midiAccess) {
@@ -147,69 +225,39 @@ document.addEventListener('DOMContentLoaded', () => {
     appState.midiAccess = midiAccess;
     appState.isMidiAvailable = true;
     
-    // Try to get the first MIDI input device
-    const inputs = midiAccess.inputs.values();
-    for (let input of inputs) {
-      if (input.state === 'connected') {
-        appState.midiInput = input;
-        console.log('MIDI Input connected:', input.name);
-        input.onmidimessage = handleMIDIMessage;
-        break; // Use the first available input that's connected
-      }
-    }
+    // Process all connected MIDI input devices, not just the first one
+    updateMIDIInputs();
     
     // Always add MIDI access listeners for when devices are connected/disconnected
     midiAccess.onstatechange = (event) => {
-      const port = event.port;
-      if (port.type === 'input' && port.state === 'connected') {
-        appState.midiInput = port;
-        console.log('New MIDI input connected:', port.name);
-        port.onmidimessage = handleMIDIMessage;
-        // Hide the on-screen keyboard if a device is connected
-        onscreenKeyboard.classList.add('hidden');
-      } else if (port.type === 'input' && port.state === 'disconnected') {
-        console.log('MIDI input disconnected:', port.name);
-        // Check if there are still other inputs connected
-        const allInputs = midiAccess.inputs.values();
-        let newActiveInput = null;
-        for (let input of allInputs) {
-          if (input.state === 'connected' && input !== port) {
-            newActiveInput = input;
-            break;
-          }
-        }
-        
-        if (newActiveInput) {
-          // Use another connected input
-          appState.midiInput = newActiveInput;
-        } else {
-          // No inputs left, clear the MIDI input
-          appState.midiInput = null;
-          // Show the on-screen keyboard if no MIDI device is available
-          if (appState.currentScreen === 'training') {
-            createOnScreenKeyboard();
-          }
-        }
-      }
+      console.log('MIDI state change:', event.port.name, event.port.state);
+      updateMIDIInputs(); // Update inputs on any state change
     };
     
-    // If no input was found initially, create on-screen keyboard
-    if (!appState.midiInput) {
-      console.log('No MIDI input found initially, creating on-screen keyboard');
-      // Only create on-screen keyboard if we're currently on the training screen
-      if (appState.currentScreen === 'training') {
-        createOnScreenKeyboard();
-      }
-    } else {
-      // If MIDI is available, hide the on-screen keyboard container
+    // Hide the on-screen keyboard if a MIDI input device is connected
+    if (appState.midiInput) {
       onscreenKeyboard.classList.add('hidden');
+    } else {
+      // If no MIDI input device is connected (but access is granted), 
+      // still show the status as MIDI available but device not connected
+      // The on-screen keyboard will appear when needed in updateMIDIInputs
     }
+    
+    // Update the MIDI status display
+    updateMidiStatusDisplay(true);
   }
 
   function onMIDIFailure() {
     console.log('MIDI Access failed');
     appState.isMidiAvailable = false;
-    createOnScreenKeyboard();
+    appState.midiAccess = null;
+    appState.midiInput = null;
+    // Show the on-screen keyboard as a fallback
+    if (appState.currentScreen === 'training') {
+      createOnScreenKeyboard();
+    }
+    // Update the MIDI status display
+    updateMidiStatusDisplay(false);
   }
 
   // Handle incoming MIDI messages
@@ -328,6 +376,8 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
       case 'settings':
         settingsScreen.classList.remove('hidden');
+        // Update MIDI status when showing settings screen
+        updateMidiStatusDisplay(!!appState.midiAccess);
         break;
       case 'training':
         trainingScreen.classList.remove('hidden');
@@ -346,6 +396,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Update app state
     appState.selectedInstrument = instrumentSelect.value;
     appState.trainingActive = true;
+    
+    // Ensure MIDI access is requested if not already available
+    if (navigator.requestMIDIAccess && !appState.midiAccess) {
+      requestMIDIAccessIfPossible();
+    }
     
     // Start session timer
     appState.sessionStartTime = new Date().getTime();
@@ -443,6 +498,55 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // Update MIDI input devices based on current connections
+  function updateMIDIInputs() {
+    if (!appState.midiAccess) return;
+    
+    // Get all current inputs
+    const inputs = appState.midiAccess.inputs.values();
+    let activeInput = null;
+    
+    // Try to find a connected input
+    for (let input of inputs) {
+      if (input.state === 'connected') {
+        if (!activeInput) {
+          activeInput = input;
+          // Set up the MIDI message handler
+          input.onmidimessage = handleMIDIMessage;
+          console.log('MIDI Input connected:', input.name);
+        } else {
+          // If we already have an active input, just make sure it's properly configured
+          input.onmidimessage = handleMIDIMessage;
+          console.log('Additional MIDI Input connected:', input.name);
+        }
+      } else if (input.state === 'disconnected') {
+        console.log('MIDI Input disconnected:', input.name);
+      }
+    }
+    
+    // Update the app state with the first available input
+    if (activeInput && !appState.midiInput) {
+      appState.midiInput = activeInput;
+      // Hide the on-screen keyboard since we now have a MIDI device
+      onscreenKeyboard.classList.add('hidden');
+    } else if (!activeInput && appState.midiInput) {
+      // No connected inputs but we previously had one
+      appState.midiInput = null;
+      // Show the on-screen keyboard 
+      if (appState.currentScreen === 'training') {
+        createOnScreenKeyboard();
+      }
+    } else if (!activeInput && !appState.midiInput) {
+      // No inputs available at all
+      if (appState.currentScreen === 'training') {
+        createOnScreenKeyboard();
+      }
+    }
+    
+    // Update the MIDI status display
+    updateMidiStatusDisplay(true);
+  }
+  
   // Handle when a note is played (from MIDI or on-screen keyboard)
   function handleNotePlayed(noteNumber, isNoteOn) {
     // Convert MIDI note number to note name (with and without octave)
