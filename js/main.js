@@ -98,9 +98,9 @@ document.addEventListener('DOMContentLoaded', () => {
         updateMidiStatusDisplay(false);
       });
     } else {
-      console.log('Web MIDI API is not supported in this browser.');
+      console.log('Web MIDI API is not supported in this browser (likely iOS or older browser).');
       appState.isMidiAvailable = false;
-      createOnScreenKeyboard();
+      // For browsers that don't support Web MIDI, update the status and ensure on-screen keyboard will be available
       updateMidiStatusDisplay(false, 'Not supported');
     }
   }
@@ -136,18 +136,51 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Function to explicitly request MIDI access (useful for retries or if initial access was denied)
   function requestMIDIAccessExplicit() {
-    if (navigator.requestMIDIAccess) {
-      navigator.requestMIDIAccess({ sysex: false })
-        .then(onMIDISuccess, (error) => {
-          console.log('User explicitly denied MIDI access or an error occurred:', error);
-          // Still provide the on-screen keyboard as a fallback
-          createOnScreenKeyboard();
-          updateMidiStatusDisplay(false);
-        });
-    } else {
+    // First check if Web MIDI API is supported in this browser
+    if (!navigator.requestMIDIAccess) {
       console.log('Web MIDI API is not supported in this browser');
-      createOnScreenKeyboard();
-      updateMidiStatusDisplay(false, 'Not supported');
+      // Show user-friendly message about MIDI not being supported
+      showMIDINotSupportedMessage();
+      return;
+    }
+    
+    // Check if we already have access before requesting again
+    if (appState.midiAccess) {
+      console.log('MIDI access already granted');
+      updateMidiStatusDisplay(true);
+      return;
+    }
+    
+    // Try to request MIDI access, which must happen during a user gesture on mobile
+    navigator.requestMIDIAccess({ sysex: false })
+      .then(onMIDISuccess)
+      .catch((error) => {
+        console.log('User explicitly denied MIDI access or an error occurred:', error);
+        // Show user-friendly message about permission being denied
+        showMIDIPermissionDeniedMessage();
+        // Still provide the on-screen keyboard as a fallback
+        createOnScreenKeyboard();
+        updateMidiStatusDisplay(false);
+      });
+  }
+  
+  // Show a user-friendly message when MIDI is not supported
+  function showMIDINotSupportedMessage() {
+    if (midiStatusText) {
+      midiStatusText.textContent = 'MIDI: Not supported on this device';
+      midiStatusText.classList.add('midi-error');
+      requestMidiBtn.classList.add('hidden');
+    }
+    // On iOS and some other mobile browsers, MIDI is not supported at all
+    console.log('Web MIDI API is not supported on this device/browser (likely iOS)');
+  }
+  
+  // Show a user-friendly message when MIDI permission is denied
+  function showMIDIPermissionDeniedMessage() {
+    if (midiStatusText) {
+      midiStatusText.textContent = 'MIDI: Permission denied';
+      midiStatusText.classList.add('midi-error');
+      requestMidiBtn.classList.remove('hidden'); // Keep the button visible so user can try again
     }
   }
   
@@ -170,7 +203,8 @@ document.addEventListener('DOMContentLoaded', () => {
       midiStatusText.textContent = 'MIDI: Not connected';
       requestMidiBtn.classList.remove('hidden');
     } else {
-      midiStatusText.textContent = 'MIDI: Not supported';
+      // Web MIDI API not supported by the browser
+      midiStatusText.textContent = 'MIDI: Not supported on this device';
       midiStatusText.classList.add('midi-error');
       requestMidiBtn.classList.add('hidden');
     }
@@ -258,6 +292,105 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // Update the MIDI status display
     updateMidiStatusDisplay(false);
+  }
+
+  // Create on-screen keyboard if no MIDI device is detected
+  function createOnScreenKeyboard() {
+    // Update status to show MIDI is not available but fallback is in use
+    if (midiStatusText) {
+      midiStatusText.textContent = 'MIDI: Not available - using on-screen keyboard';
+      midiStatusText.classList.add('midi-error');
+      requestMidiBtn.classList.add('hidden');
+    }
+    
+    // Show the on-screen keyboard container
+    onscreenKeyboard.classList.remove('hidden');
+    
+    // Create piano keys - just one octave since the app is octave-agnostic
+    const octave = 4; // Use 4th octave as the reference
+    
+    // Clear previous keyboard
+    onscreenKeyboard.innerHTML = '';
+    
+    // Create a container for one octave
+    const octaveDiv = document.createElement('div');
+    octaveDiv.className = 'relative h-40 mx-auto my-4'; // Set a fixed height for the keyboard
+    octaveDiv.style.width = '336px'; // 7 white keys * 48px (with margins)
+    octaveDiv.dataset.octave = octave;
+    
+    // Create white keys first (they go behind black keys)
+    const whiteNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+    whiteNotes.forEach((note, index) => {
+      const key = document.createElement('div');
+      key.className = 'piano-key white absolute';
+      key.dataset.note = `${note}${octave}`;
+      key.dataset.midiNote = getMIDINoteNumber(note, octave);
+      
+      // Position white keys
+      key.style.left = `${index * 48}px`;
+      key.style.width = '44px'; // Adjust width to fit 7 keys in 336px with margins
+      
+      key.addEventListener('touchstart', handleKeyPress);
+      key.addEventListener('mousedown', handleKeyPress);
+      
+      // For mouse up and touch end, we'll use a common function
+      const handleKeyRelease = (e) => {
+        e.preventDefault();
+        // Find the key element that was released
+        let keyElement = e.currentTarget;
+        if (!keyElement.classList.contains('piano-key')) {
+          keyElement = e.target;
+        }
+        keyElement.classList.remove('active');
+        
+        const midiNote = parseInt(keyElement.dataset.midiNote);
+        handleNotePlayed(midiNote, false);
+      };
+      
+      key.addEventListener('touchend', handleKeyRelease);
+      key.addEventListener('mouseup', handleKeyRelease);
+      key.addEventListener('touchcancel', handleKeyRelease);
+      
+      octaveDiv.appendChild(key);
+    });
+    
+    // Create black keys in the right positions
+    const blackNotes = ['C#', 'D#', 'F#', 'G#', 'A#'];
+    const blackKeyPositions = [0, 1, 3, 4, 5]; // Which white keys they appear after
+    
+    blackNotes.forEach((note, index) => {
+      const blackKey = document.createElement('div');
+      blackKey.className = 'piano-key black absolute';
+      blackKey.dataset.note = `${note}${octave}`;
+      blackKey.dataset.midiNote = getMIDINoteNumber(note, octave);
+      
+      // Position black keys between white keys
+      const leftPos = blackKeyPositions[index] * 48 + 34; // Positioned between white keys
+      blackKey.style.left = `${leftPos}px`;
+      
+      blackKey.addEventListener('touchstart', handleKeyPress);
+      blackKey.addEventListener('mousedown', handleKeyPress);
+      
+      const handleBlackKeyRelease = (e) => {
+        e.preventDefault();
+        let keyElement = e.currentTarget;
+        if (!keyElement.classList.contains('piano-key')) {
+          keyElement = e.target;
+        }
+        keyElement.classList.remove('active');
+        
+        const midiNote = parseInt(keyElement.dataset.midiNote);
+        handleNotePlayed(midiNote, false);
+      };
+      
+      blackKey.addEventListener('touchend', handleBlackKeyRelease);
+      blackKey.addEventListener('mouseup', handleBlackKeyRelease);
+      blackKey.addEventListener('touchcancel', handleBlackKeyRelease);
+      
+      octaveDiv.appendChild(blackKey);
+    });
+    
+    onscreenKeyboard.appendChild(octaveDiv);
   }
 
   // Handle incoming MIDI messages
@@ -381,6 +514,12 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
       case 'training':
         trainingScreen.classList.remove('hidden');
+        // Ensure on-screen keyboard is available if no MIDI support
+        if (!navigator.requestMIDIAccess || !appState.midiAccess) {
+          if (onscreenKeyboard.classList.contains('hidden') && appState.currentScreen !== 'training') {
+            createOnScreenKeyboard();
+          }
+        }
         break;
       case 'progress':
         progressScreen.classList.remove('hidden');
@@ -400,6 +539,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Ensure MIDI access is requested if not already available
     if (navigator.requestMIDIAccess && !appState.midiAccess) {
       requestMIDIAccessIfPossible();
+    } else if (!navigator.requestMIDIAccess) {
+      // Web MIDI not supported, ensure on-screen keyboard is available
+      createOnScreenKeyboard();
     }
     
     // Start session timer
