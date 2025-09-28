@@ -71,7 +71,6 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     loadProgressData();
     initializeNoteAndOctaveSelection();
-    checkMIDIAccess();
     
     // Initialize audio handler
     if (window.AudioHandler) {
@@ -82,6 +81,21 @@ document.addEventListener('DOMContentLoaded', () => {
     window.currentlyPressedNote = null;
     window.noteStartTime = null;
     window.keyPressTime = null;
+    
+    // Try to get MIDI access right away, but since it requires user gesture on many mobile browsers,
+    // we'll also request it on user interaction
+    if (navigator.requestMIDIAccess) {
+      // Try to get access immediately (might work on some browsers)
+      navigator.requestMIDIAccess().then(onMIDISuccess, (reason) => {
+        // If immediate access fails, that's okay - we'll try again on user interaction
+        console.log('Immediate MIDI access not granted, will request on user interaction');
+        onMIDIFailure();
+      });
+    } else {
+      console.log('Web MIDI API is not supported in this browser.');
+      appState.isMidiAvailable = false;
+      createOnScreenKeyboard();
+    }
   }
 
   // Set up event listeners
@@ -89,6 +103,10 @@ document.addEventListener('DOMContentLoaded', () => {
     startBtn.addEventListener('click', () => {
       if (appState.audioHandler) {
         appState.audioHandler.initializeAudio();
+      }
+      // Request MIDI access when moving to settings (user interaction required on mobile)
+      if (navigator.requestMIDIAccess && !appState.midiAccess) {
+        navigator.requestMIDIAccess().then(onMIDISuccess, onMIDIFailure);
       }
       showScreen('settings');
     });
@@ -114,17 +132,6 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Add reset progress button listener
     document.getElementById('reset-progress').addEventListener('click', resetAllProgress);
-  }
-
-  // Check for MIDI access
-  function checkMIDIAccess() {
-    if (navigator.requestMIDIAccess) {
-      navigator.requestMIDIAccess().then(onMIDISuccess, onMIDIFailure);
-    } else {
-      console.log('Web MIDI API is not supported in this browser.');
-      appState.isMidiAvailable = false;
-      createOnScreenKeyboard();
-    }
   }
 
   function onMIDISuccess(midiAccess) {
