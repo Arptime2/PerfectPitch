@@ -728,6 +728,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Add active class for visual feedback
     key.classList.add('active');
     
+    // Play the note sound using the audio handler
+    if (appState.audioHandler) {
+      appState.audioHandler.initializeAudio();
+      // Use the currently selected instrument for playback
+      appState.audioHandler.playNote(note, appState.selectedInstrument, 0.5); // Short duration for key press feedback
+    }
+    
     // Handle the note being played
     handleNotePlayed(midiNote, true);
   }

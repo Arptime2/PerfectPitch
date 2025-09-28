@@ -61,23 +61,24 @@
     </div>
 
     <!-- Training Screen -->
-    <div id="training-screen" class="hidden flex flex-col items-center justify-center p-4 flex-grow">
-      <div class="absolute top-4 left-4">
+    <div id="training-screen" class="hidden flex flex-col items-center justify-center p-4 flex-grow relative"> <!-- Added relative positioning -->
+      <div class="absolute top-4 left-4 z-20">
         <button id="exit-training" class="text-3xl text-red-500">X</button>
       </div>
       
-      <div id="note-display" class="text-5xl md:text-6xl font-bold mb-10 h-20 flex items-center justify-center text-center"></div>
+      <div id="note-display" class="text-5xl md:text-6xl font-bold mb-10 h-20 flex items-center justify-center text-center z-10 relative"></div>
       
-      <div id="feedback-animation" class="h-40 md:h-60 mb-10 flex items-center justify-center">
+      <!-- Feedback animation container with absolute positioning -->
+      <div id="feedback-animation" class="absolute top-0 left-0 w-full h-full pointer-events-none">
         <!-- Visual feedback will appear here -->
       </div>
       
-      <button id="replay-note" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full mb-10 self-center">
+      <button id="replay-note" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-full mb-10 self-center z-10 relative">
         Replay Note
       </button>
 
       <!-- On-screen keyboard will appear here if no MIDI device is detected -->
-      <div id="onscreen-keyboard" class="hidden mt-8 w-full overflow-x-auto"></div>
+      <div id="onscreen-keyboard" class="hidden mt-8 w-full overflow-x-auto z-10 relative"></div>
     </div>
 
     <!-- Progress Screen -->
