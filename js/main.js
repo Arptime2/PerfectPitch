@@ -48,8 +48,9 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Training session state
     currentNote: null,
-    startTime: null,
-    retries: 0,
+    noteStartTime: null, // Time when the current note was played
+    sessionStartTime: null, // Time when the training session started
+    retries: 0, // Number of incorrect attempts for the current note
     correctGuesses: 0,
     incorrectGuesses: 0,
     trainingActive: false,
@@ -80,6 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize variables to track note holding
     window.currentlyPressedNote = null;
     window.noteStartTime = null;
+    window.keyPressTime = null;
   }
 
   // Set up event listeners
@@ -109,6 +111,9 @@ document.addEventListener('DOMContentLoaded', () => {
       e.preventDefault();
       showScreen('progress');
     });
+    
+    // Add reset progress button listener
+    document.getElementById('reset-progress').addEventListener('click', resetAllProgress);
   }
 
   // Check for MIDI access
@@ -322,6 +327,9 @@ document.addEventListener('DOMContentLoaded', () => {
     appState.selectedInstrument = instrumentSelect.value;
     appState.trainingActive = true;
     
+    // Start session timer
+    appState.sessionStartTime = new Date().getTime();
+    
     // Show training screen
     showScreen('training');
     
@@ -341,6 +349,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Exit the training session
   function exitTrainingSession() {
+    if (appState.trainingActive && appState.sessionStartTime) {
+      // Calculate session duration and add to daily practice
+      const sessionDuration = (new Date().getTime() - appState.sessionStartTime) / 1000; // in seconds
+      const today = new Date().toISOString().split('T')[0];
+      
+      if (!appState.progressData.dailyPractice[today]) {
+        appState.progressData.dailyPractice[today] = 0;
+      }
+      
+      // Add session time to daily practice
+      appState.progressData.dailyPractice[today] += Math.round(sessionDuration);
+      saveProgressData();
+    }
+    
     appState.trainingActive = false;
     showScreen('main-menu');
   }
@@ -361,7 +383,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Don't show the note name, just show a placeholder or nothing
     noteDisplay.textContent = '?';
     
-    // Reset timer and retries for this note
+    // Start timing from when the note is played
+    appState.noteStartTime = new Date().getTime();
+    
+    // Reset retries for this note (this counts failed attempts for the current note)
     appState.retries = 0;
     
     // Play the note
@@ -401,7 +426,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Handle when a note is played (from MIDI or on-screen keyboard)
   function handleNotePlayed(noteNumber, isNoteOn) {
     // Convert MIDI note number to note name (with and without octave)
-    const noteNameWithOctave = midiNoteToName(noteNumber);
     const noteNameNoOctave = midiNoteToNameNoOctave(noteNumber);
     
     // Extract the note name from the current note being trained on
@@ -409,11 +433,11 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Check if this is the correct note
     if (isNoteOn) {
-      // Note just pressed - start timing
+      // Note just pressed - start tracking if it's the correct note
       if (noteNameNoOctave === currentNoteName) {
-        // This is the correct note name (ignoring octave), start the timer to see if it's held
-        window.noteStartTime = new Date().getTime(); // Track when the note was pressed
+        // This is the correct note name, start the timer to see if it's held
         window.currentlyPressedNote = noteNumber;
+        window.keyPressTime = new Date().getTime(); // Track when the key was pressed
       } else {
         // This is the wrong note
         handleIncorrectNote();
@@ -421,35 +445,36 @@ document.addEventListener('DOMContentLoaded', () => {
     } else {
       // Note released
       if (noteNumber === window.currentlyPressedNote) {
-        // This was the note that was being checked
+        // This was the correct note that was being checked
         // Check if it was held for at least 1 second
-        const heldDuration = new Date().getTime() - window.noteStartTime;
+        const heldDuration = new Date().getTime() - window.keyPressTime;
         
         if (heldDuration >= 1000) {
-          handleCorrectNote(); // Held for 1 second or more, correct
+          // Held for 1 second or more, correct - calculate time from when note was played by app
+          const timeToCorrect = new Date().getTime() - appState.noteStartTime;
+          window.keyPressTime = null;
+          handleCorrectNoteWithDuration(timeToCorrect / 1000); // Convert to seconds
         } else {
-          handleIncorrectNote(); // Released too early, incorrect
+          // Released too early, incorrect
+          window.keyPressTime = null;
+          handleIncorrectNote();
         }
         
         window.currentlyPressedNote = null;
-        window.noteStartTime = null;
       }
     }
   }
 
-  // Handle correct note input
-  function handleCorrectNote() {
-    // Calculate time taken from when note was played to when correct note was held for 1s
-    const timeTaken = new Date().getTime() - appState.noteStartTime;
-    
+    // Handle correct note input with time duration
+  function handleCorrectNoteWithDuration(timeTaken) {
     // Update statistics
     appState.correctGuesses++;
     
-    // Record this attempt in progress data
-    recordTrainingAttempt(true, appState.retries, timeTaken / 1000); // Convert to seconds
-    
     // Show the correct note
     noteDisplay.textContent = appState.currentNote;
+    
+    // Record this attempt in progress data
+    recordTrainingAttempt(true, appState.retries, timeTaken); // Time already in seconds
     
     // Show success feedback
     showFeedback('correct');
@@ -459,12 +484,29 @@ document.addEventListener('DOMContentLoaded', () => {
       playNextNote();
     }, 1000);
   }
+  
+  // Handle correct note input (for backward compatibility)
+  function handleCorrectNote() {
+    // Calculate time taken from when note was played to when correct note was held for 1s
+    const timeTaken = new Date().getTime() - appState.noteStartTime;
+    
+    handleCorrectNoteWithDuration(timeTaken / 1000); // Convert to seconds
+  }
 
   // Handle incorrect note input
   function handleIncorrectNote() {
     // Update statistics
     appState.incorrectGuesses++;
+    // Increment retries - this counts how many incorrect attempts were made for the current note
+    // We increment here because when the correct note is eventually played, 
+    // the retries value will represent how many failures occurred before success
     appState.retries++;
+    
+    // Record this attempt in progress data as incorrect
+    // We don't record time for incorrect attempts in the time tracking, 
+    // since time tracking is for successful identification time
+    // Just track that an incorrect attempt happened for accuracy
+    recordTrainingAttempt(false, 0, 0); // Don't pass retries value for incorrect attempts, just track accuracy
     
     // Show error feedback
     showFeedback('incorrect');
@@ -549,49 +591,72 @@ document.addEventListener('DOMContentLoaded', () => {
     // Get today's date as a string
     const today = new Date().toISOString().split('T')[0];
     
-    // Initialize today's data if it doesn't exist
+    // Ensure today's data is initialized
     if (!appState.progressData.dailyPractice[today]) {
       appState.progressData.dailyPractice[today] = 0;
+    }
+    if (!appState.progressData.accuracy[today]) {
       appState.progressData.accuracy[today] = { correct: 0, incorrect: 0 };
+    }
+    if (!appState.progressData.retries[today]) {
       appState.progressData.retries[today] = [];
+    }
+    if (!appState.progressData.time[today]) {
       appState.progressData.time[today] = [];
     }
     
-    // Update daily practice time (in seconds)
-    // Increment by the time taken for this note
-    appState.progressData.dailyPractice[today] += timeTaken;
-    
-    // Update accuracy
+    // Update accuracy - both correct and incorrect attempts should be recorded
     if (isCorrect) {
       appState.progressData.accuracy[today].correct++;
     } else {
       appState.progressData.accuracy[today].incorrect++;
     }
     
-    // Update retries and time
-    appState.progressData.retries[today].push(retries);
-    appState.progressData.time[today].push(timeTaken);
+    // Update retries and time for daily stats - only for successful attempts
+    if (isCorrect) {
+      appState.progressData.time[today].push(timeTaken);  // How long it took to get it right
+      appState.progressData.retries[today].push(retries); // How many attempts it took to get this note right
+    }
     
-    // Update hardest notes tracking
+    // Update hardest notes tracking - reset data periodically to focus on recent performance
     if (!appState.progressData.hardestNotes[appState.currentNote]) {
       appState.progressData.hardestNotes[appState.currentNote] = { 
         note: appState.currentNote,
         totalAttempts: 0,
         correctAttempts: 0,
         retries: [],
-        time: [] 
+        time: [],
+        lastUpdated: null  // Track when this was last updated
       };
+    }
+    
+    // Check if we should reset data for this note (e.g., if it hasn't been practiced recently)
+    const now = new Date();
+    const lastUpdated = appState.progressData.hardestNotes[appState.currentNote].lastUpdated ? 
+      new Date(appState.progressData.hardestNotes[appState.currentNote].lastUpdated) : 
+      now;
+    
+    // Reset if the note hasn't been practiced in the last 30 days
+    const daysSinceUpdate = (now - lastUpdated) / (1000 * 60 * 60 * 24);
+    if (daysSinceUpdate > 30) {
+      // Reset data for this note
+      appState.progressData.hardestNotes[appState.currentNote].totalAttempts = 0;
+      appState.progressData.hardestNotes[appState.currentNote].correctAttempts = 0;
+      appState.progressData.hardestNotes[appState.currentNote].retries = [];
+      appState.progressData.hardestNotes[appState.currentNote].time = [];
     }
     
     // Update note-specific stats
     appState.progressData.hardestNotes[appState.currentNote].totalAttempts++;
+    appState.progressData.hardestNotes[appState.currentNote].lastUpdated = now.toISOString();
+    
     if (isCorrect) {
       appState.progressData.hardestNotes[appState.currentNote].correctAttempts++;
+      appState.progressData.hardestNotes[appState.currentNote].retries.push(retries);
+      appState.progressData.hardestNotes[appState.currentNote].time.push(timeTaken);
     }
-    appState.progressData.hardestNotes[appState.currentNote].retries.push(retries);
-    appState.progressData.hardestNotes[appState.currentNote].time.push(timeTaken);
     
-    // Save updated data
+    // Save updated data immediately
     saveProgressData();
   }
 
@@ -745,6 +810,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const savedData = localStorage.getItem('perfectPitchProgress');
       if (savedData) {
         appState.progressData = JSON.parse(savedData);
+      } else {
+        // Initialize with default values if no saved data exists
+        appState.progressData = {
+          dailyPractice: {}, // Date string as key
+          accuracy: {},
+          retries: {},
+          time: {},
+          hardestNotes: {},
+          perfectPitchPercentage: 0
+        };
       }
     } catch (e) {
       console.error('Error loading progress data:', e);
@@ -757,6 +832,33 @@ document.addEventListener('DOMContentLoaded', () => {
         hardestNotes: {},
         perfectPitchPercentage: 0
       };
+    }
+  }
+
+  // Reset all progress data
+  function resetAllProgress() {
+    // Confirm with the user before resetting data
+    if (confirm('Are you sure you want to reset all progress? This cannot be undone.')) {
+      // Reset the progress data to default values
+      appState.progressData = {
+        dailyPractice: {}, // Date string as key
+        accuracy: {},
+        retries: {},
+        time: {},
+        hardestNotes: {},
+        perfectPitchPercentage: 0
+      };
+      
+      // Save the reset data to localStorage
+      saveProgressData();
+      
+      // Show a confirmation message
+      alert('All progress data has been reset successfully.');
+      
+      // Refresh the progress screen if it's currently displayed
+      if (appState.currentScreen === 'progress') {
+        renderProgressData();
+      }
     }
   }
 
@@ -784,7 +886,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Calculate the "Perfect Pitch" percentage
   function calculatePerfectPitchPercentage() {
     // Criteria for perfect pitch:
-    // - Fast responses (under a certain time threshold) - 25%
+    // - Fast responses (under a certain threshold) - 25%
     // - High accuracy (minimal incorrect guesses) - 30%
     // - No retries (guess first time) - 25%
     // - All notes practiced with proficiency - 20%
@@ -807,13 +909,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const accuracyScore = (accuracyPercentage / 100) * 30; // Up to 30 points
     
     // 2. RETRIES SCORE (25% of total)
-    // Calculate average retries across all attempts
+    // Calculate average retries across all successful attempts
     let totalRetries = 0;
     let allRetriesCount = 0;
     
     Object.values(retries).forEach(dayRetries => {
-      totalRetries += dayRetries.reduce((sum, val) => sum + val, 0);
-      allRetriesCount += dayRetries.length;
+      if (Array.isArray(dayRetries)) {
+        totalRetries += dayRetries.reduce((sum, val) => sum + val, 0);
+        allRetriesCount += dayRetries.length;
+      }
     });
     
     const avgRetries = allRetriesCount > 0 ? totalRetries / allRetriesCount : 0;
@@ -821,13 +925,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const retriesScore = Math.max(0, 25 - (avgRetries * 5)); // Each retry reduces score by 5 points
     
     // 3. TIME SCORE (25% of total)
-    // Calculate average time across all attempts
+    // Calculate average time across all successful attempts
     let totalTime = 0;
     let allTimesCount = 0;
     
     Object.values(time).forEach(dayTimes => {
-      totalTime += dayTimes.reduce((sum, val) => sum + val, 0);
-      allTimesCount += dayTimes.length;
+      if (Array.isArray(dayTimes)) {
+        totalTime += dayTimes.reduce((sum, val) => sum + val, 0);
+        allTimesCount += dayTimes.length;
+      }
     });
     
     const avgTime = allTimesCount > 0 ? totalTime / allTimesCount : 10; // Default to 10s if no data
@@ -843,7 +949,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // To get full points, user needs to have practiced all possible notes with some proficiency
     
     // Define all possible notes that could be trained on (based on selected octaves and notes)
-    // For now, we'll use a standard set of notes across octaves
     const allPossibleNotes = [];
     appState.selectedOctaves.forEach(octave => {
       appState.selectedNotes.forEach(note => {
@@ -854,10 +959,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Count how many of the possible notes have been attempted
     const attemptedNotes = Object.keys(hardestNotes);
     const uniqueAttempted = attemptedNotes.length;
-    const uniquePossible = allPossibleNotes.length;
+    const uniquePossible = allPossibleNotes.length > 0 ? allPossibleNotes.length : 1; // Avoid division by zero
     
     // Calculate note coverage score based on how many notes have been attempted
-    const noteCoveragePercentage = uniquePossible > 0 ? (uniqueAttempted / uniquePossible) * 100 : 0;
+    const noteCoveragePercentage = (uniqueAttempted / uniquePossible) * 100;
     
     // To earn points for a note, it needs to have been practiced with some proficiency
     // Let's say a note is considered "mastered" if the user has at least 5 attempts with 
@@ -865,17 +970,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let masteredNotes = 0;
     attemptedNotes.forEach(note => {
       const noteStats = hardestNotes[note];
-      if (noteStats.totalAttempts >= 5) {
+      if (noteStats && noteStats.retries && noteStats.time && 
+          Array.isArray(noteStats.retries) && Array.isArray(noteStats.time) &&
+          noteStats.retries.length > 0) {
         const avgRetriesForNote = noteStats.retries.reduce((a, b) => a + b, 0) / noteStats.retries.length;
         const avgTimeForNote = noteStats.time.reduce((a, b) => a + b, 0) / noteStats.time.length;
         
-        if (avgRetriesForNote < 2 && avgTimeForNote < 3) {
+        if (noteStats.totalAttempts >= 5 && avgRetriesForNote < 2 && avgTimeForNote < 3) {
           masteredNotes++;
         }
       }
     });
     
-    const masteredPercentage = uniquePossible > 0 ? (masteredNotes / uniquePossible) * 100 : 0;
+    const masteredPercentage = (masteredNotes / uniquePossible) * 100;
     // Use the minimum of coverage percentage and mastered percentage
     const effectiveNoteScore = Math.min(noteCoveragePercentage, masteredPercentage);
     const noteScore = (effectiveNoteScore / 100) * 20; // Up to 20 points
